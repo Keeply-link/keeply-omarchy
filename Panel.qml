@@ -179,7 +179,24 @@ Panel {
             foreground: root.fg
             font.family: root.family
             onTextChanged: {
-              if (root.service) root.service.search(text);
+              if (!root.service) return;
+              if (text.length === 0) {
+                // Clearing is instant and needs no network round-trip —
+                // don't make it wait out the debounce.
+                searchDebounce.stop();
+                root.service.search(text);
+              } else {
+                searchDebounce.restart();
+              }
+            }
+
+            Timer {
+              id: searchDebounce
+              interval: 250
+              repeat: false
+              onTriggered: {
+                if (root.service) root.service.search(searchField.text);
+              }
             }
             Keys.onDownPressed: function(event) {
               root.moveCursor(1)

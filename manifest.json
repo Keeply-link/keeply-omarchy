@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.rolfkoenders.keeply",
   "name": "Keeply",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Rolf Koenders",
   "license": "MIT",
   "description": "Search and browse your Keeply bookmarks from the Omarchy menu bar.",
