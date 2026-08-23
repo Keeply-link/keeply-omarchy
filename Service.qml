@@ -2,7 +2,6 @@ import QtQuick
 import Quickshell.Io
 import qs.Commons
 
-import "ApiClient.js" as Api
 import "Model.js" as Model
 
 QtObject {
@@ -34,6 +33,15 @@ QtObject {
     }
   }
 
+  // API bridge — runs each request in a short-lived helper process
+  // (bin/keeply-api) instead of QML's own XMLHttpRequest, since Qt
+  // materializes the entire response into responseText inside this
+  // long-lived shell process as it streams in, before any JS callback
+  // can inspect or bound it. See ApiBridge.qml.
+  property ApiBridge apiBridge: ApiBridge {
+    id: api
+  }
+
   // Auth bridge for OAuth flow
   property AuthBridge authBridge: AuthBridge {
     id: bridge
@@ -60,7 +68,7 @@ QtObject {
 
   function verifyAndConnect(token) {
     root.loading = true;
-    Api.verifyToken(token, function(result, err) {
+    api.verifyToken(token, function(result, err) {
       if (result) {
         root.isLoggedIn = true;
         root.user = result.email || result.name || "";
@@ -79,7 +87,7 @@ QtObject {
     if (!root.isLoggedIn) return;
     var token = credManager.token;
     root.loading = true;
-    Api.fetchBookmarks(token, 1, 20, "date-desc", function(result, err) {
+    api.fetchBookmarks(token, 1, 20, "date-desc", function(result, err) {
       root.loading = false;
       if (result && result.data) {
         var rows = [];
@@ -106,7 +114,7 @@ QtObject {
 
     var token = credManager.token;
     root.loading = true;
-    Api.searchBookmarks(token, q, 1, 30, function(result, err) {
+    api.searchBookmarks(token, q, 1, 30, function(result, err) {
       // A faster keystroke may have already superseded this request.
       if (root.query !== q) return;
       root.loading = false;
