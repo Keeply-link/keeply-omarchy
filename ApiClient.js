@@ -19,25 +19,46 @@ function request(method, path, token, body, callback) {
     responded = true;
     callback(result, error);
   }
+  // Checking responseText.length only at DONE is too late: Qt's QML XHR
+  // buffers the entire body into responseText as it streams in (verified
+  // empirically — it grows across many LOADING events well before DONE),
+  // so by the time DONE fires an oversized response has already been
+  // fully held in memory regardless of what we do with it afterward.
+  // Checking on every LOADING event and aborting the moment the cap is
+  // crossed actually bounds what gets buffered instead of just bounding
+  // what gets parsed.
+  //
+  // Deliberately NOT using the Content-Length header to reject early at
+  // HEADERS_RECEIVED: verified empirically (headless qml6 + a real slow
+  // streaming server) that calling xhr.abort() that early — before any
+  // body data has buffered into responseText — reproducibly segfaults
+  // Qt's QNetworkReply internals. Waiting for actual buffered bytes to
+  // cross the cap before aborting is what the memory-exhaustion concern
+  // actually requires anyway (the header is just a server-supplied claim,
+  // not memory pressure), so this loses no protection.
+  function rejectIfOversized() {
+    // abort() re-fires onreadystatechange synchronously (see below), which
+    // re-enters this same function — without this, that reentrant call
+    // would see the same still-oversized responseText and call abort()
+    // again, forever.
+    if (responded) return true;
+    if (!xhr.responseText || xhr.responseText.length <= MAX_RESPONSE_BYTES) return false;
+    // abort() synchronously re-fires onreadystatechange (readyState DONE,
+    // status 0), which would otherwise race this same respond() call and
+    // win with a generic "Request failed (0)". Report first, so that
+    // reentrant call finds responded already set and no-ops.
+    respond(null, "Response too large");
+    xhr.abort();
+    return true;
+  }
   xhr.onreadystatechange = function() {
-    if (xhr.readyState === XMLHttpRequest.HEADERS_RECEIVED) {
-      const lengthHeader = xhr.getResponseHeader("Content-Length");
-      if (lengthHeader && parseInt(lengthHeader, 10) > MAX_RESPONSE_BYTES) {
-        // abort() synchronously re-fires onreadystatechange (readyState
-        // DONE, status 0), which would otherwise race this same respond()
-        // call and win with a generic "Request failed (0)". Report first,
-        // so that reentrant call finds responded already set and no-ops.
-        respond(null, "Response too large");
-        xhr.abort();
-      }
+    if (xhr.readyState === XMLHttpRequest.LOADING) {
+      rejectIfOversized();
       return;
     }
     if (xhr.readyState !== XMLHttpRequest.DONE) return;
+    if (rejectIfOversized()) return;
     if (xhr.status >= 200 && xhr.status < 300) {
-      if (xhr.responseText.length > MAX_RESPONSE_BYTES) {
-        respond(null, "Response too large");
-        return;
-      }
       try {
         respond(JSON.parse(xhr.responseText), null);
       } catch (e) {

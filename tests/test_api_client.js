@@ -48,6 +48,12 @@ function makeFakeXHRClass(responseHeaders) {
       this.readyState = FakeXHR.HEADERS_RECEIVED;
       if (this.onreadystatechange) this.onreadystatechange();
     }
+    triggerLoading(responseTextSoFar) {
+      this.readyState = FakeXHR.LOADING;
+      this.status = 200;
+      this.responseText = responseTextSoFar;
+      if (this.onreadystatechange) this.onreadystatechange();
+    }
     triggerDone(status, responseText) {
       this.readyState = FakeXHR.DONE;
       this.status = status;
@@ -133,7 +139,13 @@ function run_invalid_json_reports_error() {
   check("invalid JSON reports an error instead of throwing", calls.length === 1 && calls[0][0] === null && calls[0][1] === "Invalid response from server");
 }
 
-function run_oversized_content_length_aborts_before_body() {
+function run_headers_received_never_aborts() {
+  // Deliberately NOT checking Content-Length at HEADERS_RECEIVED: verified
+  // empirically against a real Qt/QML runtime that calling xhr.abort() that
+  // early (before any body has buffered into responseText) reproducibly
+  // segfaults Qt's QNetworkReply internals. Only actual buffered bytes
+  // (checked on LOADING) may trigger an abort — a large Content-Length
+  // header alone must never do so.
   const tooLarge = String(6 * 1024 * 1024); // over the 5 MiB cap
   const FakeXHR = makeTrackedFakeXHRClass({ "Content-Length": tooLarge });
   const { request } = loadApiClient(FakeXHR);
@@ -144,27 +156,29 @@ function run_oversized_content_length_aborts_before_body() {
   const xhr = FakeXHR.instances[0];
   xhr.triggerHeaders();
 
-  check("oversized Content-Length triggers abort", xhr.aborted === true);
-  check("oversized Content-Length reports 'Response too large' exactly once", calls.length === 1 && calls[0][0] === null && calls[0][1] === "Response too large");
+  check("a large Content-Length header alone never triggers abort", xhr.aborted === false);
+  check("no callback fires from HEADERS_RECEIVED alone", calls.length === 0);
 }
 
 function run_abort_does_not_double_invoke_callback() {
-  const tooLarge = String(6 * 1024 * 1024);
-  const FakeXHR = makeTrackedFakeXHRClass({ "Content-Length": tooLarge });
+  const FakeXHR = makeTrackedFakeXHRClass({});
   const { request } = loadApiClient(FakeXHR);
   let calls = [];
   request("GET", "/bookmarks", "tok", null, function(result, error) {
     calls.push([result, error]);
   });
   const xhr = FakeXHR.instances[0];
-  xhr.triggerHeaders(); // this internally calls abort(), which itself fires onreadystatechange again at DONE
+  const hugeBody = "x".repeat(6 * 1024 * 1024);
+  xhr.triggerLoading(hugeBody); // this internally calls abort(), which itself fires onreadystatechange again at DONE
 
   check("callback fires exactly once even though abort() re-triggers onreadystatechange", calls.length === 1);
 }
 
 function run_oversized_body_without_content_length_header() {
-  // Simulates chunked transfer-encoding, where Content-Length is absent
-  // but the final body still turns out to be oversized.
+  // Simulates a response that completes in a single read with no prior
+  // LOADING event and no Content-Length header (e.g. chunked encoding on
+  // a very fast connection) — the DONE-time check is the last resort for
+  // this edge case, since there was no earlier chance to catch it.
   const FakeXHR = makeTrackedFakeXHRClass({});
   const { request } = loadApiClient(FakeXHR);
   let calls = [];
@@ -178,12 +192,42 @@ function run_oversized_body_without_content_length_header() {
   check("oversized body with no Content-Length is still rejected", calls.length === 1 && calls[0][0] === null && calls[0][1] === "Response too large");
 }
 
+function run_incremental_loading_aborts_before_full_download() {
+  // The realistic attack shape: no Content-Length, response streams in
+  // over many chunks. Must be caught as soon as the cap is crossed, not
+  // only once the whole thing has already arrived.
+  const FakeXHR = makeTrackedFakeXHRClass({});
+  const { request } = loadApiClient(FakeXHR);
+  let calls = [];
+  request("GET", "/bookmarks", "tok", null, function(result, error) {
+    calls.push([result, error]);
+  });
+  const xhr = FakeXHR.instances[0];
+
+  const chunkSize = 1024 * 1024; // 1 MiB per simulated chunk, cap is 5 MiB
+  let soFar = "";
+  let abortedAtLength = null;
+  for (let i = 0; i < 20 && !xhr.aborted; i++) {
+    soFar += "x".repeat(chunkSize);
+    xhr.triggerLoading(soFar);
+    if (xhr.aborted && abortedAtLength === null) abortedAtLength = soFar.length;
+  }
+
+  check("incremental growth is aborted once the cap is crossed", xhr.aborted === true);
+  check(
+    "abort happens well before the full 20 MiB would have arrived",
+    abortedAtLength !== null && abortedAtLength <= 6 * 1024 * 1024,
+  );
+  check("reports 'Response too large' exactly once for the incremental case", calls.length === 1 && calls[0][0] === null && calls[0][1] === "Response too large");
+}
+
 run_success_parses_json();
 run_non_2xx_status_reports_error();
 run_invalid_json_reports_error();
-run_oversized_content_length_aborts_before_body();
+run_headers_received_never_aborts();
 run_abort_does_not_double_invoke_callback();
 run_oversized_body_without_content_length_header();
+run_incremental_loading_aborts_before_full_download();
 
 if (failures > 0) {
   console.log("\n" + failures + " test(s) FAILED");
