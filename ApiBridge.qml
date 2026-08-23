@@ -35,6 +35,13 @@ QtObject {
       }
 
       stdout: SplitParser {
+        // An empty splitMarker delivers whatever a single OS read returns,
+        // instead of the default "\n" behavior of buffering an entire line
+        // internally before onRead ever fires once. The accumulation below
+        // already caps across multiple calls, so this only changes how
+        // early each chunk is checked, catching a helper that emits one
+        // huge unbroken line before the default delimiter search ever would.
+        splitMarker: ""
         onRead: function(value) {
           if (proc.overflowed) return;
           var next = proc.stdoutBuf + value;
@@ -48,6 +55,7 @@ QtObject {
         }
       }
       stderr: SplitParser {
+        splitMarker: ""
         onRead: function(value) {
           if (proc.overflowed) return;
           var next = proc.stderrBuf + value;

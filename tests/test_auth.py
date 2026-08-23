@@ -122,6 +122,61 @@ def test_oauth_handler_captures_code_and_state_on_callback():
         httpd.server_close()
 
 
+def test_oauth_handler_escapes_error_description_in_html():
+    # error_description is attacker-controlled: an authorize link can be
+    # crafted with any value and sent to a victim, so it must never be
+    # interpolated into the callback's HTML response unescaped.
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), keeply_auth.OAuthHandler)
+    port = httpd.server_address[1]
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        keeply_auth.OAuthHandler.error = None
+        payload = "<script>alert(1)</script>"
+        url = f"http://127.0.0.1:{port}/callback?" + urllib.parse.urlencode(
+            {"error": "access_denied", "error_description": payload}
+        )
+
+        try:
+            urllib.request.urlopen(url, timeout=2)
+            assert False, "expected an HTTPError for the 400 response"
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8")
+
+        assert "<script>alert(1)</script>" not in body
+        assert "&lt;script&gt;" in body
+        # The raw (unescaped) value is still what's reported internally —
+        # only the HTML response is escaped, not the underlying error used
+        # for the plugin's own plain-text error display.
+        assert keeply_auth.OAuthHandler.error == payload
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_oauth_handler_error_description_falls_back_to_error_code():
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), keeply_auth.OAuthHandler)
+    port = httpd.server_address[1]
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        keeply_auth.OAuthHandler.error = None
+        url = f"http://127.0.0.1:{port}/callback?" + urllib.parse.urlencode({"error": "access_denied"})
+
+        try:
+            urllib.request.urlopen(url, timeout=2)
+            assert False, "expected an HTTPError for the 400 response"
+        except urllib.error.HTTPError:
+            pass
+
+        # Must be the plain string "access_denied", not a stringified list
+        # like "['access_denied']" (a plain str() of parse_qs's list value).
+        assert keeply_auth.OAuthHandler.error == "access_denied"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 class _FakeResponse:
     """Mimics http.client.HTTPResponse's chunked .read(n) interface."""
 
@@ -197,6 +252,8 @@ if __name__ == "__main__":
     test_is_callback_path()
     test_oauth_handler_rejects_wrong_path()
     test_oauth_handler_captures_code_and_state_on_callback()
+    test_oauth_handler_escapes_error_description_in_html()
+    test_oauth_handler_error_description_falls_back_to_error_code()
     test_read_capped_returns_full_body_under_limit()
     test_read_capped_allows_exactly_the_limit()
     test_read_capped_rejects_one_byte_over_the_limit()

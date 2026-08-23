@@ -26,6 +26,9 @@ jobs:
       - name: Python API helper tests
         run: python3 tests/test_api.py
 
+      - name: Pure JS modules (result shaping)
+        run: node tests/test_model.js
+
       - name: QML house style (fonts, palette, text format)
         run: |
           if command -v python3 >/dev/null; then

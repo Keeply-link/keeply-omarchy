@@ -82,11 +82,19 @@ QtObject {
 
   property Process authProcess: Process {
     stdout: SplitParser {
+      // An empty splitMarker delivers whatever a single OS read returns,
+      // instead of the default "\n" behavior of buffering an entire line
+      // internally before onRead ever fires once. appendStdout already
+      // accumulates and caps across multiple calls, so this only changes
+      // how early each chunk is checked, catching a helper that emits one
+      // huge unbroken line before the default delimiter search ever would.
+      splitMarker: ""
       onRead: function(value) {
         root.appendStdout(value);
       }
     }
     stderr: SplitParser {
+      splitMarker: ""
       onRead: function(value) {
         root.appendStderr(value);
       }

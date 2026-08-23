@@ -90,10 +90,7 @@ QtObject {
     api.fetchBookmarks(token, 1, 20, "date-desc", function(result, err) {
       root.loading = false;
       if (result && result.data) {
-        var rows = [];
-        for (var i = 0; i < result.data.length; i++) {
-          rows.push(Model.bookmarkToRow(result.data[i]));
-        }
+        var rows = Model.bookmarksToRows(result.data);
         root.recentBookmarks = rows;
         if (root.query.length === 0) {
           root.currentResults = rows;
@@ -119,10 +116,7 @@ QtObject {
       if (root.query !== q) return;
       root.loading = false;
       if (result && result.hits) {
-        var rows = [];
-        for (var i = 0; i < result.hits.length; i++) {
-          rows.push(Model.bookmarkToRow(result.hits[i]));
-        }
+        var rows = Model.bookmarksToRows(result.hits);
         root.searchResults = rows;
         root.currentResults = rows;
       } else {

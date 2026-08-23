@@ -14,6 +14,7 @@ import os
 import socketserver
 import sys
 import threading
+import time
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 
@@ -22,6 +23,10 @@ _loader = SourceFileLoader("keeply_api", _API_SCRIPT)
 _spec = spec_from_loader("keeply_api", _loader)
 keeply_api = module_from_spec(_spec)
 _loader.exec_module(keeply_api)
+
+
+def _far_future_deadline():
+    return time.monotonic() + 60
 
 
 class _FakeResponse:
@@ -38,18 +43,18 @@ class _FakeResponse:
 
 def test_read_capped_returns_full_body_under_limit():
     body = b'{"data": []}'
-    assert keeply_api.read_capped(_FakeResponse(body), 1024) == body
+    assert keeply_api.read_capped(_FakeResponse(body), 1024, _far_future_deadline()) == body
 
 
 def test_read_capped_allows_exactly_the_limit():
     body = b"x" * 1024
-    assert keeply_api.read_capped(_FakeResponse(body), 1024) == body
+    assert keeply_api.read_capped(_FakeResponse(body), 1024, _far_future_deadline()) == body
 
 
 def test_read_capped_rejects_one_byte_over_the_limit():
     body = b"x" * 1025
     try:
-        keeply_api.read_capped(_FakeResponse(body), 1024)
+        keeply_api.read_capped(_FakeResponse(body), 1024, _far_future_deadline())
         assert False, "expected ValueError for oversized response"
     except ValueError:
         pass
@@ -58,9 +63,23 @@ def test_read_capped_rejects_one_byte_over_the_limit():
 def test_read_capped_rejects_body_larger_than_a_single_chunk():
     body = b"x" * (200 * 1024)
     try:
-        keeply_api.read_capped(_FakeResponse(body), 1024)
+        keeply_api.read_capped(_FakeResponse(body), 1024, _far_future_deadline())
         assert False, "expected ValueError for oversized response"
     except ValueError:
+        pass
+
+
+def test_read_capped_rejects_once_deadline_has_passed():
+    # A response trickling in slower than the byte cap would ever trip, but
+    # never actually finishing, must still be bounded by wall-clock time —
+    # this is what keeps a drip-fed connection from holding this process
+    # (and the resources tied to it) open indefinitely.
+    body = b"x" * 10
+    already_passed_deadline = time.monotonic() - 1
+    try:
+        keeply_api.read_capped(_FakeResponse(body), 1024, already_passed_deadline)
+        assert False, "expected TimeoutError once the deadline has passed"
+    except TimeoutError:
         pass
 
 
@@ -118,6 +137,61 @@ def _with_local_base(server, fn):
         return fn()
     finally:
         keeply_api.API_BASE = original_base
+
+
+def test_make_request_does_not_follow_redirects():
+    # A malicious or compromised response could redirect off the real API
+    # host entirely, resending the Authorization header wherever it points.
+    # Proving the redirect target never receives a request is the strongest
+    # available evidence the token can't leak this way.
+    with _TestServer(_json_handler(200, {"leaked": True})) as attacker:
+
+        def redirect_handler(req):
+            req.send_response(302)
+            req.send_header("Location", f"http://127.0.0.1:{attacker.port}/steal")
+            req.end_headers()
+
+        with _TestServer(redirect_handler) as real_api:
+            status, body = _with_local_base(
+                real_api, lambda: keeply_api.make_request("GET", "/bookmarks", "secret-token", None)
+            )
+            assert status == 302
+            assert body == b""
+            assert attacker.last_headers is None, "the redirect target must never receive a request"
+
+
+def test_make_request_times_out_on_a_drip_fed_response():
+    # Each individual gap below is well under the per-socket timeout, but
+    # the cumulative time across all of them exceeds the total deadline —
+    # isolating the wall-clock deadline check from the per-read socket
+    # timeout, which alone would let this trickle continue indefinitely.
+    def drip_handler(req):
+        req.send_response(200)
+        req.send_header("Content-Type", "application/json")
+        req.end_headers()
+        for _ in range(10):
+            req.wfile.write(b"x")
+            req.wfile.flush()
+            time.sleep(0.15)
+
+    with _TestServer(drip_handler) as server:
+        original_total = keeply_api.TOTAL_TIMEOUT_SECONDS
+        original_socket = keeply_api.SOCKET_TIMEOUT_SECONDS
+        keeply_api.TOTAL_TIMEOUT_SECONDS = 0.3
+        keeply_api.SOCKET_TIMEOUT_SECONDS = 5
+
+        def call():
+            try:
+                keeply_api.make_request("GET", "/bookmarks", "tok", None)
+                assert False, "expected TimeoutError for a drip-fed response"
+            except TimeoutError:
+                pass
+
+        try:
+            _with_local_base(server, call)
+        finally:
+            keeply_api.TOTAL_TIMEOUT_SECONDS = original_total
+            keeply_api.SOCKET_TIMEOUT_SECONDS = original_socket
 
 
 def test_make_request_success_returns_status_and_body():
@@ -184,6 +258,23 @@ def test_end_to_end_http_error():
         assert stdout == ""
 
 
+def test_end_to_end_redirect_is_reported_as_http_error():
+    with _TestServer(_json_handler(200, {"leaked": True})) as attacker:
+
+        def redirect_handler(req):
+            req.send_response(302)
+            req.send_header("Location", f"http://127.0.0.1:{attacker.port}/steal")
+            req.end_headers()
+
+        with _TestServer(redirect_handler) as server:
+            request_line = json.dumps({"method": "GET", "path": "/bookmarks", "token": "secret-token", "body": None}) + "\n"
+            exit_code, stdout, stderr = _with_local_base(server, lambda: _run_main(request_line))
+            assert exit_code == 3
+            assert stderr.strip() == "http_status:302"
+            assert stdout == ""
+            assert attacker.last_headers is None
+
+
 def test_end_to_end_oversized():
     huge_payload = {"data": "x" * (keeply_api.MAX_RESPONSE_BYTES + 1)}
     with _TestServer(_json_handler(200, huge_payload)) as server:
@@ -233,11 +324,15 @@ if __name__ == "__main__":
     test_read_capped_allows_exactly_the_limit()
     test_read_capped_rejects_one_byte_over_the_limit()
     test_read_capped_rejects_body_larger_than_a_single_chunk()
+    test_read_capped_rejects_once_deadline_has_passed()
+    test_make_request_does_not_follow_redirects()
+    test_make_request_times_out_on_a_drip_fed_response()
     test_make_request_success_returns_status_and_body()
     test_make_request_non_2xx_returns_status_with_empty_body()
     test_make_request_oversized_raises_value_error()
     test_end_to_end_success()
     test_end_to_end_http_error()
+    test_end_to_end_redirect_is_reported_as_http_error()
     test_end_to_end_oversized()
     test_end_to_end_invalid_request_line()
     test_end_to_end_post_body_is_forwarded()

@@ -20,12 +20,13 @@ Protocol:
 Exit codes:
   0  success
   2  response exceeded the byte cap
-  3  non-2xx HTTP status (stderr is "http_status:<code>")
-  4  any other failure (bad request line, network error, invalid JSON body)
+  3  non-2xx HTTP status, including a blocked redirect (stderr is "http_status:<code>")
+  4  any other failure (bad request line, network error, timeout, invalid JSON body)
 """
 
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -36,17 +37,46 @@ API_BASE = "https://api.keeply.tools"
 # bounding what this process will ever hold in memory.
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
+# Bounds a single socket operation (connect, or one read). This alone does
+# NOT bound the total request: a server that sends one byte every 9 seconds
+# never trips it while never finishing either. TOTAL_TIMEOUT_SECONDS below
+# is the real bound on how long this process can be kept alive.
+SOCKET_TIMEOUT_SECONDS = 10
+TOTAL_TIMEOUT_SECONDS = 30
 
-def read_capped(resp, max_bytes):
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuses to follow any redirect.
+
+    urllib follows redirects by default and resends the same headers,
+    including Authorization, to wherever the redirect points — a malicious
+    or compromised response could redirect off the real API host entirely
+    and walk off with the token, or reach an internal/local-network target.
+    This API has no legitimate reason to redirect, so none are followed;
+    a 3xx is surfaced like any other non-2xx status.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirectHandler)
+
+
+def read_capped(resp, max_bytes, deadline):
     """Read a response body up to max_bytes, raising if it's exceeded.
 
     resp.read() with no argument reads the entire body regardless of size;
     this reads in bounded chunks so an oversized or never-ending response
-    can't be accepted into memory.
+    can't be accepted into memory. deadline (a time.monotonic() value) also
+    bounds total wall-clock time, so a response trickled in just under the
+    per-read socket timeout can't keep this process alive indefinitely.
     """
     chunks = []
     total = 0
     while True:
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"Request exceeded {TOTAL_TIMEOUT_SECONDS} second time limit")
         chunk = resp.read(65536)
         if not chunk:
             break
@@ -72,16 +102,18 @@ def make_request(method, path, token, body):
         },
         method=method,
     )
+    deadline = time.monotonic() + TOTAL_TIMEOUT_SECONDS
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, read_capped(resp, MAX_RESPONSE_BYTES)
+        with _opener.open(req, timeout=SOCKET_TIMEOUT_SECONDS) as resp:
+            return resp.status, read_capped(resp, MAX_RESPONSE_BYTES, deadline)
     except urllib.error.HTTPError as e:
         # Drain (and still cap) the error body, but its content is never
         # surfaced — only the status code is, matching this plugin's
-        # existing "Request failed (<status>)" wording.
+        # existing "Request failed (<status>)" wording. A blocked redirect
+        # also lands here, as its 3xx status.
         try:
-            read_capped(e, MAX_RESPONSE_BYTES)
-        except ValueError:
+            read_capped(e, MAX_RESPONSE_BYTES, deadline)
+        except (ValueError, TimeoutError):
             pass
         return e.code, b""
 
