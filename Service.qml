@@ -125,6 +125,14 @@ QtObject {
   }
 
   function openBookmark(url) {
+    // Bookmark URLs come from the server, not user input typed here, but
+    // never hand an arbitrary scheme to the platform's URL handler — only
+    // plain web links should ever come out of a bookmark manager.
+    var scheme = String(url || "").match(/^([a-zA-Z][a-zA-Z0-9+.-]*):/);
+    if (!scheme || (scheme[1].toLowerCase() !== "http" && scheme[1].toLowerCase() !== "https")) {
+      root.errorMessage = "Refused to open a non-web link.";
+      return;
+    }
     Qt.openUrlExternally(url);
   }
 

@@ -40,6 +40,20 @@ def generate_pkce_pair():
     return code_verifier, code_challenge
 
 
+def is_callback_path(path):
+    """Only the exact redirect path may complete the flow."""
+    return path == "/callback"
+
+
+def validate_state(received_state, expected_state):
+    """Constant-time check that the callback's state matches ours.
+
+    Without this, a code bound to a different, attacker-initiated
+    authorization request could be accepted as if it were ours.
+    """
+    return bool(received_state) and secrets.compare_digest(received_state, expected_state)
+
+
 def exchange_code(code, code_verifier, hostname=None):
     """Exchange authorization code for access token."""
     payload = {
@@ -76,6 +90,14 @@ class OAuthHandler(http.server.BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
 
+        # Only the exact redirect path can complete the flow. Anything else
+        # (a browser's opportunistic /favicon.ico request, a stray probe)
+        # gets a plain 404 and must not be able to end the wait loop.
+        if not is_callback_path(parsed.path):
+            self.send_response(404)
+            self.end_headers()
+            return
+
         if "code" in params and "state" in params:
             OAuthHandler.code = params["code"][0]
             OAuthHandler.state = params["state"][0]
@@ -95,8 +117,9 @@ class OAuthHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(f"<h2>Error: {OAuthHandler.error}</h2>".encode())
         else:
-            self.send_response(404)
+            self.send_response(400)
             self.end_headers()
+            return
 
         if OAuthHandler.done_event:
             OAuthHandler.done_event.set()
@@ -160,6 +183,10 @@ def main():
 
     if not OAuthHandler.code:
         print(json.dumps({"error": "No authorization code received"}), file=sys.stderr)
+        sys.exit(1)
+
+    if not validate_state(OAuthHandler.state, state):
+        print(json.dumps({"error": "State mismatch"}), file=sys.stderr)
         sys.exit(1)
 
     # Get hostname for key naming
