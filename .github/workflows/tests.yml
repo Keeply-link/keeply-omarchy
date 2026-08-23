@@ -23,6 +23,9 @@ jobs:
       - name: Python auth tests
         run: python3 tests/test_auth.py
 
+      - name: Pure JS modules (API client)
+        run: node tests/test_api_client.js
+
       - name: QML house style (fonts, palette, text format)
         run: |
           if command -v python3 >/dev/null; then
@@ -34,12 +37,12 @@ jobs:
       - name: QML parser when available on the runner
         run: |
           if command -v qmlformat >/dev/null; then
-            for file in Panel.qml Service.qml Settings.qml ResultRow.qml; do
+            for file in Panel.qml Service.qml Settings.qml ResultRow.qml AuthBridge.qml CredentialManager.qml; do
               qmlformat "$file" >/dev/null
             done
           fi
           if command -v qmllint >/dev/null; then
-            for file in Panel.qml Service.qml Settings.qml ResultRow.qml; do
+            for file in Panel.qml Service.qml Settings.qml ResultRow.qml AuthBridge.qml CredentialManager.qml; do
               qmllint "$file"
             done
           fi

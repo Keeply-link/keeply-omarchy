@@ -9,6 +9,12 @@ QtObject {
   property string token: ""
   property string stdoutBuffer: ""
   property string stderrBuffer: ""
+  property bool outputOverflowed: false
+
+  // A token-exchange result or error message is at most a few hundred
+  // bytes; this bounds what the shared shell process will hold onto
+  // regardless of what the helper script actually does.
+  readonly property int maxBufferBytes: 65536
 
   signal success(string token)
   signal failed(string message)
@@ -20,6 +26,7 @@ QtObject {
     token = "";
     stdoutBuffer = "";
     stderrBuffer = "";
+    outputOverflowed = false;
 
     try {
       var scriptPath = String(Qt.resolvedUrl("bin/keeply-auth"));
@@ -45,22 +52,53 @@ QtObject {
     failed(error);
   }
 
+  // Bounds what a runaway or hostile helper process can make this
+  // long-lived shell process hold in memory, independent of whatever the
+  // script itself does. Terminates the process on overflow rather than
+  // just discarding further output, so it can't keep running indefinitely.
+  function appendStdout(value) {
+    if (root.outputOverflowed) return;
+    var next = root.stdoutBuffer + value;
+    if (next.length > root.maxBufferBytes) {
+      root.outputOverflowed = true;
+      root.stdoutBuffer = next.substring(0, root.maxBufferBytes);
+      if (authProcess.running) authProcess.signal(15); // SIGTERM
+      return;
+    }
+    root.stdoutBuffer = next;
+  }
+
+  function appendStderr(value) {
+    if (root.outputOverflowed) return;
+    var next = root.stderrBuffer + value;
+    if (next.length > root.maxBufferBytes) {
+      root.outputOverflowed = true;
+      root.stderrBuffer = next.substring(0, root.maxBufferBytes);
+      if (authProcess.running) authProcess.signal(15); // SIGTERM
+      return;
+    }
+    root.stderrBuffer = next;
+  }
+
   property Process authProcess: Process {
     stdout: SplitParser {
       onRead: function(value) {
-        root.stdoutBuffer += value;
+        root.appendStdout(value);
       }
     }
     stderr: SplitParser {
       onRead: function(value) {
-        root.stderrBuffer += value;
+        root.appendStderr(value);
       }
     }
     onRunningChanged: {
       if (!running) {
         root.running = false;
 
-        if (root.stdoutBuffer.trim().length > 0) {
+        if (root.outputOverflowed) {
+          root.error = "Auth helper produced unexpectedly large output";
+          root.failed(root.error);
+        } else if (root.stdoutBuffer.trim().length > 0) {
           try {
             var result = JSON.parse(root.stdoutBuffer.trim());
             if (result.accessToken) {

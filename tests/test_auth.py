@@ -122,6 +122,50 @@ def test_oauth_handler_captures_code_and_state_on_callback():
         httpd.server_close()
 
 
+class _FakeResponse:
+    """Mimics http.client.HTTPResponse's chunked .read(n) interface."""
+
+    def __init__(self, data):
+        self._remaining = data
+
+    def read(self, amt):
+        chunk = self._remaining[:amt]
+        self._remaining = self._remaining[amt:]
+        return chunk
+
+
+def test_read_capped_returns_full_body_under_limit():
+    body = b'{"accessToken": "abc123"}'
+    result = keeply_auth.read_capped(_FakeResponse(body), 1024)
+    assert result == body
+
+
+def test_read_capped_allows_exactly_the_limit():
+    body = b"x" * 1024
+    result = keeply_auth.read_capped(_FakeResponse(body), 1024)
+    assert result == body
+
+
+def test_read_capped_rejects_one_byte_over_the_limit():
+    body = b"x" * 1025
+    try:
+        keeply_auth.read_capped(_FakeResponse(body), 1024)
+        assert False, "expected ValueError for oversized response"
+    except ValueError:
+        pass
+
+
+def test_read_capped_rejects_body_larger_than_a_single_chunk():
+    # A response much larger than one 65536-byte read must still be
+    # rejected, not accepted just because the overflow spans chunks.
+    body = b"x" * (200 * 1024)
+    try:
+        keeply_auth.read_capped(_FakeResponse(body), 1024)
+        assert False, "expected ValueError for oversized response"
+    except ValueError:
+        pass
+
+
 def test_oauth_handler_rejects_callback_missing_state():
     httpd = socketserver.TCPServer(("127.0.0.1", 0), keeply_auth.OAuthHandler)
     port = httpd.server_address[1]
@@ -153,5 +197,9 @@ if __name__ == "__main__":
     test_is_callback_path()
     test_oauth_handler_rejects_wrong_path()
     test_oauth_handler_captures_code_and_state_on_callback()
+    test_read_capped_returns_full_body_under_limit()
+    test_read_capped_allows_exactly_the_limit()
+    test_read_capped_rejects_one_byte_over_the_limit()
+    test_read_capped_rejects_body_larger_than_a_single_chunk()
     test_oauth_handler_rejects_callback_missing_state()
     print("All tests passed!")

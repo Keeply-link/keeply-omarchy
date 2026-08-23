@@ -9,6 +9,11 @@ QtObject {
 
   readonly property string schema: "io.github.rolfkoenders.keeply"
 
+  // A real API key here is a short hex string; this rejects an absurdly
+  // large keyring value instead of accepting it as a token, independent
+  // of whatever wrote it there.
+  readonly property int maxTokenLength: 4096
+
   signal tokenLoaded(string token)
   signal tokenCleared()
   signal error(string message)
@@ -33,6 +38,12 @@ QtObject {
     stdout: SplitParser {
       onRead: function(value) {
         var val = String(value || "").trim();
+        if (val.length > root.maxTokenLength) {
+          root.token = "";
+          root.ready = true;
+          root.error("Stored credential is invalid");
+          return;
+        }
         if (val.length > 0) {
           root.token = val;
           root.ready = true;
