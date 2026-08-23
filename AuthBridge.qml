@@ -7,84 +7,79 @@ QtObject {
   property bool running: false
   property string error: ""
   property string token: ""
+  property string stdoutBuffer: ""
+  property string stderrBuffer: ""
 
   signal success(string token)
   signal failed(string message)
-
-  property var _process: null
 
   function start() {
     if (running) return;
     running = true;
     error = "";
     token = "";
+    stdoutBuffer = "";
+    stderrBuffer = "";
 
-    var scriptPath = Qt.resolvedUrl("bin/keeply-auth");
-    if (scriptPath.startsWith("file://")) {
-      scriptPath = scriptPath.substring(7);
+    try {
+      var scriptPath = String(Qt.resolvedUrl("bin/keeply-auth"));
+      if (scriptPath.startsWith("file://")) {
+        scriptPath = scriptPath.substring(7);
+      }
+
+      authProcess.command = ["python3", scriptPath];
+      authProcess.running = true;
+    } catch (e) {
+      running = false;
+      error = "Could not start auth helper: " + e;
+      failed(error);
     }
-
-    _process = processComponent.createObject(root, {
-      command: ["python3", scriptPath]
-    });
-    _process.running = true;
   }
 
   function cancel() {
-    if (_process) {
-      _process.signal(2); // SIGINT
+    if (authProcess.running) {
+      authProcess.signal(2); // SIGINT
     }
     running = false;
     error = "Cancelled";
     failed(error);
   }
 
-  property Component processComponent: Component {
-    Process {
-      id: proc
-      property string stdoutBuffer: ""
-      property string stderrBuffer: ""
-
-      stdout: SplitParser {
-        onRead: data => {
-          proc.stdoutBuffer += data;
-        }
+  property Process authProcess: Process {
+    stdout: SplitParser {
+      onRead: function(value) {
+        root.stdoutBuffer += value;
       }
-
-      stderr: SplitParser {
-        onRead: data => {
-          proc.stderrBuffer += data;
-        }
+    }
+    stderr: SplitParser {
+      onRead: function(value) {
+        root.stderrBuffer += value;
       }
+    }
+    onRunningChanged: {
+      if (!running) {
+        root.running = false;
 
-      onRunningChanged: {
-        if (!running) {
-          root.running = false;
-
-          if (stdoutBuffer.trim().length > 0) {
-            try {
-              var result = JSON.parse(stdoutBuffer.trim());
-              if (result.accessToken) {
-                root.token = result.accessToken;
-                root.success(root.token);
-              } else if (result.error) {
-                root.error = result.error;
-                root.failed(root.error);
-              }
-            } catch (e) {
-              root.error = "Invalid response from auth helper";
+        if (root.stdoutBuffer.trim().length > 0) {
+          try {
+            var result = JSON.parse(root.stdoutBuffer.trim());
+            if (result.accessToken) {
+              root.token = result.accessToken;
+              root.success(root.token);
+            } else if (result.error) {
+              root.error = result.error;
               root.failed(root.error);
             }
-          } else if (stderrBuffer.trim().length > 0) {
-            root.error = stderrBuffer.trim();
-            root.failed(root.error);
-          } else {
-            root.error = "Auth helper exited unexpectedly";
+          } catch (e) {
+            root.error = "Invalid response from auth helper";
             root.failed(root.error);
           }
-
-          proc.destroy();
-          _process = null;
+        } else if (root.stderrBuffer.trim().length > 0) {
+          root.error = root.stderrBuffer.trim();
+          root.failed(root.error);
+        } else {
+          root.error = "Auth helper exited unexpectedly";
+          root.failed(root.error);
         }
       }
     }

@@ -16,6 +16,7 @@ import http.server
 import json
 import os
 import secrets
+import socket
 import socketserver
 import subprocess
 import sys
@@ -53,7 +54,9 @@ def exchange_code(code, code_verifier, hostname=None):
     req = urllib.request.Request(
         OAUTH_TOKEN_URL,
         data=data,
-        headers={"Content-Type": "application/json"},
+        # Cloudflare blocks the default "Python-urllib/x.y" User-Agent outright
+        # (error 1010) before the request ever reaches the app.
+        headers={"Content-Type": "application/json", "User-Agent": "keeply-omarchy/0.1.0"},
         method="POST",
     )
 

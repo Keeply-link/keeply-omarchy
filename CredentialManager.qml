@@ -8,94 +8,71 @@ QtObject {
   property bool ready: false
 
   readonly property string schema: "io.github.rolfkoenders.keeply"
-  readonly property string key: "keeply_omarchy_token"
 
   signal tokenLoaded(string token)
   signal tokenCleared()
   signal error(string message)
 
-  Component {
-    id: lookupProcess
-    Process {
-      property string result: ""
-      running: false
-      command: ["secret-tool", "lookup", "application", root.schema]
-      stdout: SplitParser {
-        onRead: data => {
-          if (data.length > 0) {
-            root.token = data.trim();
-            root.ready = true;
-            root.tokenLoaded(root.token);
-          } else {
-            root.token = "";
-            root.ready = true;
-          }
-        }
-      }
-      onRunningChanged: {
-        if (!running && result.length === 0) {
+  function lookup() {
+    lookupProcess.command = ["secret-tool", "lookup", "application", root.schema];
+    lookupProcess.running = true;
+  }
+
+  function store(newToken) {
+    storeProcess.command = ["secret-tool", "store", "--label=Keeply for Omarchy", "application", root.schema];
+    storeProcess.stdinEnabled = true;
+    storeProcess.running = true;
+  }
+
+  function clear() {
+    clearProcess.command = ["secret-tool", "clear", "application", root.schema];
+    clearProcess.running = true;
+  }
+
+  property Process lookupProcess: Process {
+    stdout: SplitParser {
+      onRead: function(value) {
+        var val = String(value || "").trim();
+        if (val.length > 0) {
+          root.token = val;
+          root.ready = true;
+          root.tokenLoaded(root.token);
+        } else {
+          root.token = "";
           root.ready = true;
         }
       }
     }
-  }
-
-  Component {
-    id: storeProcess
-    Process {
-      running: false
-      command: ["secret-tool", "store", "--replace", "application", root.schema, "label", "Keeply for Omarchy"]
-      onRunningChanged: {
-        if (!running) {
-          root.lookup();
-        }
+    onRunningChanged: {
+      if (!running) {
+        root.ready = true;
       }
     }
   }
 
-  Component {
-    id: clearProcess
-    Process {
-      running: false
-      command: ["secret-tool", "clear", "application", root.schema]
-      onRunningChanged: {
-        if (!running) {
-          root.token = "";
-          root.tokenCleared();
-        }
+  property Process storeProcess: Process {
+    stdinEnabled: true
+    onStarted: {
+      storeProcess.write(root._pendingToken + "\n");
+      storeProcess.stdinEnabled = false;
+    }
+    onRunningChanged: {
+      if (!running) {
+        root.lookup();
       }
     }
   }
 
-  property var _lookupInstance: null
-  property var _storeInstance: null
-  property var _clearInstance: null
-
-  function lookup() {
-    if (_lookupInstance) {
-      _lookupInstance.destroy();
+  property Process clearProcess: Process {
+    onRunningChanged: {
+      if (!running) {
+        root.token = "";
+        root.tokenCleared();
+      }
     }
-    _lookupInstance = lookupProcess.createObject(root);
-    _lookupInstance.running = true;
   }
 
-  function store(newToken) {
-    if (_storeInstance) {
-      _storeInstance.destroy();
-    }
-    _storeInstance = storeProcess.createObject(root);
-    _storeInstance.stdin.write(newToken + "\n");
-    _storeInstance.stdin.close();
-    _storeInstance.running = true;
-  }
-
-  function clear() {
-    if (_clearInstance) {
-      _clearInstance.destroy();
-    }
-    _clearInstance = clearProcess.createObject(root);
-    _clearInstance.running = true;
-  }
+  property string _pendingToken: ""
 
   Component.onCompleted: {
     lookup();

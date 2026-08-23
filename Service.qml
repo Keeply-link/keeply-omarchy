@@ -17,10 +17,8 @@ QtObject {
   property var searchResults: []
   property var currentResults: []
 
-  readonly property string settingsPath: StandardPaths.writableLocation(StandardPaths.ConfigLocation) + "/keeply-omarchy/config.json"
-
-  // Credential manager
-  property var credentialManager: CredentialManager {
+  // Credential manager — declared as a property, not inline child
+  property CredentialManager credentialManager: CredentialManager {
     id: credManager
     onTokenLoaded: function(token) {
       if (token.length > 0) {
@@ -37,9 +35,10 @@ QtObject {
   }
 
   // Auth bridge for OAuth flow
-  property var authBridge: AuthBridge {
+  property AuthBridge authBridge: AuthBridge {
     id: bridge
     onSuccess: function(token) {
+      credManager._pendingToken = token;
       credManager.store(token);
       root.verifyAndConnect(token);
     }
@@ -61,34 +60,38 @@ QtObject {
 
   function verifyAndConnect(token) {
     root.loading = true;
-    var result = Api.verifyToken(token);
-    if (result) {
-      root.isLoggedIn = true;
-      root.user = result.email || result.name || "";
-      root.loading = false;
-      root.fetchRecent();
-    } else {
-      root.isLoggedIn = false;
-      root.user = "";
-      root.loading = false;
-      credManager.clear();
-    }
+    Api.verifyToken(token, function(result, err) {
+      if (result) {
+        root.isLoggedIn = true;
+        root.user = result.email || result.name || "";
+        root.loading = false;
+        root.fetchRecent();
+      } else {
+        root.isLoggedIn = false;
+        root.user = "";
+        root.loading = false;
+        credManager.clear();
+      }
+    });
   }
 
   function fetchRecent() {
     if (!root.isLoggedIn) return;
     var token = credManager.token;
-    var result = Api.fetchBookmarks(token, 1, 20, "date-desc");
-    if (result && result.data) {
-      var rows = [];
-      for (var i = 0; i < result.data.length; i++) {
-        rows.push(Model.bookmarkToRow(result.data[i]));
+    root.loading = true;
+    Api.fetchBookmarks(token, 1, 20, "date-desc", function(result, err) {
+      root.loading = false;
+      if (result && result.data) {
+        var rows = [];
+        for (var i = 0; i < result.data.length; i++) {
+          rows.push(Model.bookmarkToRow(result.data[i]));
+        }
+        root.recentBookmarks = rows;
+        if (root.query.length === 0) {
+          root.currentResults = rows;
+        }
       }
-      root.recentBookmarks = rows;
-      if (root.query.length === 0) {
-        root.currentResults = rows;
-      }
-    }
+    });
   }
 
   function search(q) {
@@ -102,29 +105,30 @@ QtObject {
     }
 
     var token = credManager.token;
-    var result = Api.searchBookmarks(token, q, 1, 30);
-    if (result && result.hits) {
-      var rows = [];
-      for (var i = 0; i < result.hits.length; i++) {
-        rows.push(Model.bookmarkToRow(result.hits[i]));
+    root.loading = true;
+    Api.searchBookmarks(token, q, 1, 30, function(result, err) {
+      // A faster keystroke may have already superseded this request.
+      if (root.query !== q) return;
+      root.loading = false;
+      if (result && result.hits) {
+        var rows = [];
+        for (var i = 0; i < result.hits.length; i++) {
+          rows.push(Model.bookmarkToRow(result.hits[i]));
+        }
+        root.searchResults = rows;
+        root.currentResults = rows;
+      } else {
+        root.searchResults = [];
+        root.currentResults = [];
       }
-      root.searchResults = rows;
-      root.currentResults = rows;
-    } else {
-      root.searchResults = [];
-      root.currentResults = [];
-    }
+    });
   }
 
   function openBookmark(url) {
     Qt.openUrlExternally(url);
   }
 
-  function init() {
-    credManager.lookup();
-  }
-
   Component.onCompleted: {
-    init();
+    credManager.lookup();
   }
 }

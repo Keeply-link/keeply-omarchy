@@ -5,6 +5,8 @@ import qs.Commons
 CursorSurface {
   id: root
 
+  property var bar: null
+
   required property string bookmarkId
   required property string bookmarkTitle
   required property string bookmarkUrl
@@ -17,6 +19,7 @@ CursorSurface {
   required property string bookmarkCreatedAt
 
   signal openRequested(string url)
+  signal cursorRequested()
 
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property string family: bar ? bar.fontFamily : Style.font.family
@@ -36,13 +39,20 @@ CursorSurface {
     return tags.join(", ");
   }
 
+  MouseArea {
+    anchors.fill: parent
+    hoverEnabled: true
+    cursorShape: Qt.PointingHandCursor
+    onContainsMouseChanged: if (containsMouse) root.cursorRequested()
+    onClicked: root.openRequested(root.bookmarkUrl)
+  }
+
   Row {
     id: row
     anchors.fill: parent
     anchors.margins: Style.space(8)
     spacing: Style.space(10)
 
-    // Favicon / domain icon
     Rectangle {
       width: 24
       height: 24
@@ -57,10 +67,10 @@ CursorSurface {
         font.pixelSize: 12
         font.bold: true
         color: root.fg
+        textFormat: Text.PlainText
       }
     }
 
-    // Content
     Column {
       width: parent.width - 24 - Style.space(10)
       spacing: 2
@@ -106,9 +116,5 @@ CursorSurface {
         }
       }
     }
-  }
-
-  onClicked: {
-    root.openRequested(root.bookmarkUrl);
   }
 }
