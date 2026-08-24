@@ -31,6 +31,18 @@ Panel {
     }
   }
 
+  // Login verification and the initial bookmark fetch otherwise only ever
+  // run once, right at startup. If either hits a transient failure,
+  // there was no way to retry short of restarting the whole shell —
+  // Service is a singleton that doesn't re-run its startup logic just
+  // because the panel is reopened. retryIfNeeded() picks up whichever
+  // one is still incomplete.
+  onOpenedChanged: {
+    if (root.opened && root.service) {
+      root.service.retryIfNeeded();
+    }
+  }
+
   function setCursor(index) {
     root.cursorIndex = index
   }
