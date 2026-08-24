@@ -68,17 +68,29 @@ QtObject {
 
   function verifyAndConnect(token) {
     root.loading = true;
+    root.errorMessage = "";
     api.verifyToken(token, function(result, err) {
+      root.loading = false;
       if (result) {
         root.isLoggedIn = true;
         root.user = result.email || result.name || "";
-        root.loading = false;
         root.fetchRecent();
       } else {
         root.isLoggedIn = false;
         root.user = "";
-        root.loading = false;
-        credManager.clear();
+        if (err === "Request failed (401)" || err === "Request failed (403)") {
+          // The server has definitively rejected this token (revoked,
+          // expired, or otherwise no longer valid) — holding onto it
+          // serves no purpose.
+          credManager.clear();
+        } else {
+          // Anything else (network unreachable, a 5xx, a timeout) says
+          // nothing about whether the token itself is still good. Clearing
+          // it here would force a full new OAuth flow over what might be
+          // a one-off blip; keep it and let retryIfNeeded() try again the
+          // next time the panel opens.
+          root.errorMessage = err || "Could not verify your Keeply account.";
+        }
       }
     });
   }
@@ -90,13 +102,32 @@ QtObject {
     api.fetchBookmarks(token, 1, 20, "date-desc", function(result, err) {
       root.loading = false;
       if (result && result.data) {
+        root.errorMessage = "";
         var rows = Model.bookmarksToRows(result.data);
         root.recentBookmarks = rows;
         if (root.query.length === 0) {
           root.currentResults = rows;
         }
+      } else {
+        root.errorMessage = err || "Could not load your bookmarks.";
       }
     });
+  }
+
+  // Called whenever the panel opens. fetchRecent() and verifyAndConnect()
+  // otherwise only ever run once, right at startup — if that one attempt
+  // hits a transient failure, nothing would retry it short of restarting
+  // the whole shell, and reopening the panel would silently show a
+  // half-connected or empty state indefinitely.
+  function retryIfNeeded() {
+    if (root.loading) return;
+    if (root.isLoggedIn) {
+      if (root.recentBookmarks.length === 0) {
+        root.fetchRecent();
+      }
+    } else if (credManager.token.length > 0) {
+      root.verifyAndConnect(credManager.token);
+    }
   }
 
   function search(q) {
